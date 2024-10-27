@@ -31,8 +31,8 @@ print(data['egg_price'].head())
 es_model = ExponentialSmoothing(data['egg_price'].astype(float), trend='add', seasonal='add', seasonal_periods=12)
 es_fit = es_model.fit()
 
-# 2025年1月から12月までの予測
-forecast_index = pd.date_range(start='2025-01-01', end='2025-12-31', freq='MS')
+# 2025年1月から2027年3月までの予測
+forecast_index = pd.date_range(start='2025-01-01', end='2027-03-31', freq='MS')
 es_forecast = es_fit.forecast(steps=len(forecast_index))
 es_forecast.index = forecast_index
 
@@ -41,7 +41,7 @@ residuals = es_fit.resid
 std_resid = np.std(residuals)
 conf_int = stats.norm.interval(0.95, loc=es_forecast, scale=std_resid)
 
-print("2025年の鶏卵価格予測 (ExponentialSmoothing):")
+print("2025年1月から2027年3月までの鶏卵価格予測 (ExponentialSmoothing):")
 print(es_forecast)
 
 # モデルの評価指標
@@ -82,7 +82,7 @@ metrics_df = pd.DataFrame(metrics_explanation)
 
 # 結果をCSVファイルとして出力
 with open('result.csv', 'w', encoding='utf-8') as f:
-    f.write("# 2025年の鶏卵価格予測結果\n\n")
+    f.write("# 2025年1月から2027年3月までの鶏卵価格予測結果\n\n")
     results.to_csv(f, index=False)
     f.write("\n# モデル評価指標と説明\n")
     metrics_df.to_csv(f, index=False)
