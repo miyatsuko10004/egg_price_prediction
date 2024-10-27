@@ -1,9 +1,7 @@
 import pandas as pd
 import numpy as np
-from sklearn.model_selection import train_test_split
-from sklearn.ensemble import RandomForestRegressor
+from statsmodels.tsa.statespace.sarimax import SARIMAX
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
-from statsmodels.tsa.holtwinters import ExponentialSmoothing
 from scipy import stats
 
 # データの読み込み
@@ -23,32 +21,26 @@ for col in numeric_columns:
 # 欠損値の処理
 data = data.dropna()
 
-# データ型の確認
-print(data.dtypes)
-print(data['egg_price'].head())
-
-# ExponentialSmoothingモデルの適用
-es_model = ExponentialSmoothing(data['egg_price'].astype(float), trend='add', seasonal='add', seasonal_periods=12)
-es_fit = es_model.fit()
+# SARIMAモデルの適用
+# ここでは例としてSARIMA(1,1,1)(1,1,1,12)を使用していますが、
+# 実際のデータに合わせて調整が必要かもしれません
+sarima_model = SARIMAX(data['egg_price'], order=(1,1,1), seasonal_order=(1,1,1,12))
+sarima_fit = sarima_model.fit()
 
 # 2025年1月から2027年3月までの予測
 forecast_index = pd.date_range(start='2025-01-01', end='2027-03-31', freq='MS')
-es_forecast = es_fit.forecast(steps=len(forecast_index))
-es_forecast.index = forecast_index
+sarima_forecast = sarima_fit.get_forecast(steps=len(forecast_index))
+sarima_mean = sarima_forecast.predicted_mean
+sarima_ci = sarima_forecast.conf_int()
 
-# 予測区間の計算（95%信頼区間）
-residuals = es_fit.resid
-std_resid = np.std(residuals)
-conf_int = stats.norm.interval(0.95, loc=es_forecast, scale=std_resid)
-
-print("2025年1月から2027年3月までの鶏卵価格予測 (ExponentialSmoothing):")
-print(es_forecast)
+print("2025年1月から2027年3月までの鶏卵価格予測 (SARIMA):")
+print(sarima_mean)
 
 # モデルの評価指標
-mse = mean_squared_error(data['egg_price'][-12:], es_fit.fittedvalues[-12:])
+mse = mean_squared_error(data['egg_price'][-12:], sarima_fit.fittedvalues[-12:])
 rmse = np.sqrt(mse)
-mae = mean_absolute_error(data['egg_price'][-12:], es_fit.fittedvalues[-12:])
-r2 = r2_score(data['egg_price'][-12:], es_fit.fittedvalues[-12:])
+mae = mean_absolute_error(data['egg_price'][-12:], sarima_fit.fittedvalues[-12:])
+r2 = r2_score(data['egg_price'][-12:], sarima_fit.fittedvalues[-12:])
 
 print(f"\nモデル評価指標:")
 print(f"平均二乗誤差 (MSE): {mse:.2f}")
@@ -58,10 +50,10 @@ print(f"決定係数 (R-squared): {r2:.2f}")
 
 # 結果をDataFrameにまとめる
 results = pd.DataFrame({
-    'Date': es_forecast.index,
-    'ES_Forecast': es_forecast.values,
-    'Lower_CI': conf_int[0],
-    'Upper_CI': conf_int[1]
+    'Date': sarima_mean.index,
+    'SARIMA_Forecast': sarima_mean.values,
+    'Lower_CI': sarima_ci['lower egg_price'],
+    'Upper_CI': sarima_ci['upper egg_price']
 })
 
 # 評価指標と説明を含む辞書
@@ -81,10 +73,10 @@ metrics_explanation = {
 metrics_df = pd.DataFrame(metrics_explanation)
 
 # 結果をCSVファイルとして出力
-with open('result.csv', 'w', encoding='utf-8') as f:
-    f.write("# 2025年1月から2027年3月までの鶏卵価格予測結果\n\n")
+with open('result_sarima.csv', 'w', encoding='utf-8') as f:
+    f.write("# 2025年1月から2027年3月までの鶏卵価格予測結果 (SARIMA)\n\n")
     results.to_csv(f, index=False)
     f.write("\n# モデル評価指標と説明\n")
     metrics_df.to_csv(f, index=False)
 
-print("\n結果がresult.csvファイルに出力されました。")
+print("\n結果がresult_sarima.csvファイルに出力されました。")
