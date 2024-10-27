@@ -30,8 +30,8 @@ sarima_fit = sarima_model.fit()
 
 # 予測期間の設定
 today = datetime.now()
-start_date = today.replace(year=today.year + 2, month=4, day=1)  # 2年後の4月1日
-end_date = start_date.replace(year=start_date.year + 1, month=3, day=31)  # 翌年の3月31日
+start_date = today.replace(day=1)  # 今月の1日
+end_date = (today.replace(year=today.year + 2, month=4, day=1) - timedelta(days=1)).replace(day=31)  # 2年後の年度末（3月31日）
 
 # 予測期間のインデックスを作成
 forecast_index = pd.date_range(start=start_date, end=end_date, freq='MS')
