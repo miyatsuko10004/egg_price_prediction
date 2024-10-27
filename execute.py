@@ -5,6 +5,7 @@ from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 from scipy import stats
 import openpyxl
 from openpyxl.chart import LineChart, Reference
+from datetime import datetime, timedelta
 
 # データの読み込み
 data = pd.read_csv("eggData.csv")
@@ -24,18 +25,24 @@ for col in numeric_columns:
 data = data.dropna()
 
 # SARIMAモデルの適用
-# ここでは例としてSARIMA(1,1,1)(1,1,1,12)を使用していますが、
-# 実際のデータに合わせて調整が必要かもしれません
 sarima_model = SARIMAX(data['egg_price'], order=(1,1,1), seasonal_order=(1,1,1,12))
 sarima_fit = sarima_model.fit()
 
-# 2025年1月から2027年3月までの予測
-forecast_index = pd.date_range(start='2025-01-01', end='2027-03-31', freq='MS')
-sarima_forecast = sarima_fit.get_forecast(steps=len(forecast_index))
+# 予測期間の設定
+today = datetime.now()
+start_date = today.replace(year=today.year + 2, month=4, day=1)  # 2年後の4月1日
+end_date = start_date.replace(year=start_date.year + 1, month=3, day=31)  # 翌年の3月31日
+
+# 予測期間のインデックスを作成
+forecast_index = pd.date_range(start=start_date, end=end_date, freq='MS')
+
+# 予測の実行
+steps = len(forecast_index)
+sarima_forecast = sarima_fit.get_forecast(steps=steps)
 sarima_mean = sarima_forecast.predicted_mean
 sarima_ci = sarima_forecast.conf_int()
 
-print("2025年1月から2027年3月までの鶏卵価格予測 (SARIMA):")
+print(f"{start_date.strftime('%Y年%m月')}から{end_date.strftime('%Y年%m月')}までの鶏卵価格予測 (SARIMA):")
 print(sarima_mean)
 
 # モデルの評価指標
@@ -52,7 +59,7 @@ print(f"決定係数 (R-squared): {r2:.2f}")
 
 # 結果をDataFrameにまとめる
 results = pd.DataFrame({
-    'Date': forecast_index.strftime('%Y-%m'),  # 日付を'YYYY-MM'形式に変換
+    'Date': forecast_index.strftime('%Y-%m'),
     'SARIMA_Forecast': sarima_mean.values,
     'Lower_CI': sarima_ci['lower egg_price'],
     'Upper_CI': sarima_ci['upper egg_price']
@@ -80,11 +87,11 @@ ws = wb.active
 ws.title = "予測結果"
 
 # タイトルを追加
-ws['A1'] = "2025年1月から2027年3月までの鶏卵価格予測結果 (SARIMA)"
+ws['A1'] = f"{start_date.strftime('%Y年%m月')}から{end_date.strftime('%Y年%m月')}までの鶏卵価格予測結果 (SARIMA)"
 ws['A1'].font = openpyxl.styles.Font(bold=True, size=14)
 
 # 予測結果を追加
-ws.append(['Date', 'SARIMA_Forecast', 'Lower_CI', 'Upper_CI'])  # ヘッダーを手動で追加
+ws.append(['Date', 'SARIMA_Forecast', 'Lower_CI', 'Upper_CI'])
 for r in results.itertuples(index=False, name=None):
     ws.append(r)
 
@@ -105,6 +112,11 @@ cats = Reference(ws, min_col=1, min_row=2, max_row=len(results)+1)
 
 chart.add_data(data, titles_from_data=True)
 chart.set_categories(cats)
+
+# x軸のラベルを調整
+chart.x_axis.tickLblSkip = 3  # 3つおきにラベルを表示
+chart.x_axis.tickLblPos = "low"
+chart.x_axis.textRotation = 45  # ラベルを45度回転
 
 # グラフをシートに追加
 ws.add_chart(chart, "G2")
