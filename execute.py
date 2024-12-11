@@ -161,11 +161,18 @@ class RobustEggPriceForecast:
             exog=exog_forecast
         )
         
+        # インデックスが適切に設定されていることを確認
+        forecast_mean = forecast.predicted_mean
+        forecast_mean.index = pd.to_datetime(forecast_mean.index)
+
+        forecast_conf_int = forecast.conf_int()
+        forecast_conf_int.index = pd.to_datetime(forecast_conf_int.index)
+        
         return {
-            'forecast_mean': forecast.predicted_mean,
-            'forecast_conf_int': forecast.conf_int()
+            'forecast_mean': forecast_mean,
+            'forecast_conf_int': forecast_conf_int
         }
-    
+
     def generate_report(self, forecast_results, outliers):
         """
         予測結果とレポートの生成
@@ -184,15 +191,29 @@ class RobustEggPriceForecast:
         headers = ['Date', 'Forecast_Mean', 'Lower_CI', 'Upper_CI']
         ws_forecast.append(headers)
         
+        # 予測結果のインデックスを日付に変換
+        forecast_dates = forecast_results['forecast_mean'].index
+        
+        # インデックスが整数型や予期しない形式の場合は修正
+        if not isinstance(forecast_dates[0], pd.Timestamp):
+            forecast_dates = pd.to_datetime(forecast_dates)
+        
+        # 予測結果と信頼区間を同期
+        forecast_mean = forecast_results['forecast_mean']
+        forecast_conf_int = forecast_results['forecast_conf_int']
+        
         # 予測結果の書き込み
         for date in forecast_dates:
-            # インデックスが一致するように調整
-            lower_ci = forecast_conf_int.loc[date, 'lower egg_price']
-            upper_ci = forecast_conf_int.loc[date, 'upper egg_price']
+            try:
+                lower_ci = forecast_conf_int.loc[date, 'lower egg_price']
+                upper_ci = forecast_conf_int.loc[date, 'upper egg_price']
+            except KeyError:
+                print(f"警告: 日付 {date} に対する予測信頼区間が見つかりませんでした。")
+                continue
             
             ws_forecast.append([
-                date.strftime('%Y/%m'), 
-                forecast_value, 
+                date.strftime('%Y/%m'),  # 日付をフォーマット
+                forecast_mean.loc[date], 
                 lower_ci, 
                 upper_ci
             ])
