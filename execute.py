@@ -1,127 +1,268 @@
 import pandas as pd
 import numpy as np
+import matplotlib.pyplot as plt
 from statsmodels.tsa.statespace.sarimax import SARIMAX
-from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+from sklearn.preprocessing import StandardScaler
 from scipy import stats
 import openpyxl
-from openpyxl.chart import LineChart, Reference
 from datetime import datetime, timedelta
+import warnings
 
-# データの読み込み
-data = pd.read_csv("eggData.csv")
+class RobustEggPriceForecast:
+    def __init__(self, filepath):
+        """
+        外れ値を考慮した鶏卵価格予測モデル
+        
+        :param filepath: CSVファイルのパス
+        """
+        self.original_data = self.load_data(filepath)
+        self.processed_data = self.preprocess_data()
+    
+    def load_data(self, filepath):
+        """
+        データの読み込み
+        
+        :param filepath: CSVファイルのパス
+        :return: 読み込んだデータフレーム
+        """
+        data = pd.read_csv(filepath)
+        data['Date'] = pd.to_datetime(data['Date'] + '/1', format='%Y/%m/%d')
+        data.set_index('Date', inplace=True)
+        
+        # 数値列の変換
+        numeric_columns = [
+            'egg_price', 'egg_production', 'egg_shipment', 'egg_recipt', 
+            'chick_count', 'farmer_price', 'wholesale_price', 'retail_price', 
+            'household_consumption_per_man', 'egg_import', 
+            'chick_feed_shipment', 'chicken_feed_shipment', 'feed_price'
+        ]
+        
+        for col in numeric_columns:
+            if col in data.columns:
+                data[col] = pd.to_numeric(data[col], errors='coerce')
+        
+        return data.dropna()
+    
+    def preprocess_data(self):
+        """
+        データの前処理と特徴量エンジニアリング
+        
+        :return: 前処理されたデータフレーム
+        """
+        data = self.original_data.copy()
+        
+        # 移動平均と標準偏差の追加
+        data['price_ma_3m'] = data['egg_price'].rolling(window=3).mean()
+        data['price_ma_6m'] = data['egg_price'].rolling(window=6).mean()
+        data['price_std_3m'] = data['egg_price'].rolling(window=3).std()
+        
+        return data.dropna()
+    
+    def detect_outliers(self, method='iqr'):
+        """
+        外れ値の検出
+        
+        :param method: 外れ値検出方法 ('iqr' or 'zscore')
+        :return: 外れ値のインデックス
+        """
+        if method == 'iqr':
+            # 四分位範囲法
+            Q1 = self.processed_data['egg_price'].quantile(0.25)
+            Q3 = self.processed_data['egg_price'].quantile(0.75)
+            IQR = Q3 - Q1
+            lower_bound = Q1 - 1.5 * IQR
+            upper_bound = Q3 + 1.5 * IQR
+            
+            outliers = self.processed_data[
+                (self.processed_data['egg_price'] < lower_bound) | 
+                (self.processed_data['egg_price'] > upper_bound)
+            ]
+        
+        elif method == 'zscore':
+            # Zスコア法
+            z_scores = np.abs(stats.zscore(self.processed_data['egg_price']))
+            outliers = self.processed_data[z_scores > 3]
+        
+        return outliers
+    
+    def robust_preprocessing(self):
+        """
+        外れ値に対してロバストな前処理
+        
+        :return: 外れ値処理されたデータフレーム
+        """
+        # 外れ値の検出（2つの方法）
+        iqr_outliers = self.detect_outliers(method='iqr')
+        zscore_outliers = self.detect_outliers(method='zscore')
+        
+        # データのコピー
+        data_processed = self.processed_data.copy()
+        
+        # 外れ値の処理（中央値補完）
+        combined_outliers = pd.concat([iqr_outliers, zscore_outliers]).drop_duplicates()
+        
+        for col in ['egg_price', 'price_ma_3m', 'price_ma_6m', 'price_std_3m']:
+            median_value = data_processed[col].median()
+            data_processed.loc[combined_outliers.index, col] = median_value
+        
+        return data_processed, combined_outliers
+    
+    def create_sarima_model(self, data):
+        """
+        ロバストSARIMAモデルの作成
+        
+        :param data: モデル学習用データ
+        :return: 学習済みSARIMAモデル
+        """
+        # 外れ値の影響を考慮した特徴量
+        features = [
+            'price_ma_3m', 
+            'price_ma_6m', 
+            'price_std_3m'
+        ]
+        
+        exog = data[features]
+        
+        sarima_model = SARIMAX(
+            data['egg_price'], 
+            exog=exog,
+            order=(1,1,1), 
+            seasonal_order=(1,1,1,12)
+        )
+        
+        return sarima_model.fit()
+    
+    def forecast_with_uncertainty(self, sarima_fit, forecast_steps):
+        """
+        不確実性を考慮した予測
+        
+        :param sarima_fit: 学習済みSARIMAモデル
+        :param forecast_steps: 予測ステップ数
+        :return: 予測結果
+        """
+        # 予測期間の設定
+        forecast_index = pd.date_range(
+            start=self.processed_data.index[-1] + pd.offsets.MonthBegin(1), 
+            periods=forecast_steps, 
+            freq='MS'
+        )
+        
+        # 予測のための外生変数の準備
+        last_data_point = self.processed_data.iloc[-1]
+        exog_forecast = pd.DataFrame({
+            'price_ma_3m': [last_data_point['price_ma_3m']] * len(forecast_index),
+            'price_ma_6m': [last_data_point['price_ma_6m']] * len(forecast_index),
+            'price_std_3m': [last_data_point['price_std_3m']] * len(forecast_index)
+        }, index=forecast_index)
+        
+        # 予測の実行
+        forecast = sarima_fit.get_forecast(
+            steps=len(forecast_index), 
+            exog=exog_forecast
+        )
+        
+        # インデックスが適切に設定されていることを確認
+        forecast_mean = forecast.predicted_mean
+        forecast_mean.index = pd.to_datetime(forecast_mean.index)
 
-# 'Date'列を適切な日付形式に変換
-data['Date'] = pd.to_datetime(data['Date'] + '/1', format='%Y/%m/%d')
-data.set_index('Date', inplace=True)
+        forecast_conf_int = forecast.conf_int()
+        forecast_conf_int.index = pd.to_datetime(forecast_conf_int.index)
+        
+        return {
+            'forecast_mean': forecast_mean,
+            'forecast_conf_int': forecast_conf_int
+        }
 
-# データ型の確認と変換
-numeric_columns = ['egg_price', 'egg_production', 'egg_shipment', 'egg_recipt', 'chick_count', 'farmer_price', 'wholesale_price', 'retail_price', 'household_consumption_per_man', 'egg_import', 'chick_feed_shipment', 'chicken_feed_shipment', 'feed_price']
+    def generate_report(self, forecast_results, outliers):
+        """
+        予測結果とレポートの生成
+        
+        :param forecast_results: 予測結果
+        :param outliers: 検出された外れ値
+        """
+        # Excelワークブックの作成
+        wb = openpyxl.Workbook()
+        
+        # 予測結果シート
+        ws_forecast = wb.active
+        ws_forecast.title = "Price_Forecast"
+        
+        # ヘッダーの書き込み
+        headers = ['Date', 'Forecast_Mean', 'Lower_CI', 'Upper_CI']
+        ws_forecast.append(headers)
+        
+        # 予測結果のインデックスを日付に変換
+        forecast_dates = forecast_results['forecast_mean'].index
+        
+        # インデックスが整数型や予期しない形式の場合は修正
+        if not isinstance(forecast_dates[0], pd.Timestamp):
+            forecast_dates = pd.to_datetime(forecast_dates)
+        
+        # 予測結果と信頼区間を同期
+        forecast_mean = forecast_results['forecast_mean']
+        forecast_conf_int = forecast_results['forecast_conf_int']
+        
+        # 予測結果の書き込み
+        for date in forecast_dates:
+            try:
+                lower_ci = forecast_conf_int.loc[date, 'lower egg_price']
+                upper_ci = forecast_conf_int.loc[date, 'upper egg_price']
+            except KeyError:
+                print(f"警告: 日付 {date} に対する予測信頼区間が見つかりませんでした。")
+                continue
+            
+            ws_forecast.append([
+                date.strftime('%Y/%m'),  # 日付をフォーマット
+                forecast_mean.loc[date], 
+                lower_ci, 
+                upper_ci
+            ])
+        
+        # 外れ値シートの作成
+        ws_outliers = wb.create_sheet(title="Outliers")
+        ws_outliers.append(['Date', 'Egg_Price', 'Detected_Method'])
+        
+        for idx, row in outliers.iterrows():
+            ws_outliers.append([
+                idx.strftime('%Y/%m'), 
+                row['egg_price'], 
+                '合成外れ値検出法'
+            ])
+        
+        # レポートの保存
+        wb.save('robust_egg_price_forecast.xlsx')
+    
+    def run_forecast(self):
+        """
+        価格予測の実行
+        
+        :return: 予測結果
+        """
+        # ロバスト前処理
+        data_processed, outliers = self.robust_preprocessing()
+        
+        # モデルの学習
+        sarima_fit = self.create_sarima_model(data_processed)
+        
+        # 予測の実行
+        forecast_results = self.forecast_with_uncertainty(
+            sarima_fit, 
+            forecast_steps=24  # 2年分
+        )
+        
+        # レポート生成
+        self.generate_report(forecast_results, outliers)
+        
+        return forecast_results
 
-for col in numeric_columns:
-    if col in data.columns:
-        data[col] = pd.to_numeric(data[col], errors='coerce')
+def main():
+    # モデルの初期化と予測実行
+    model = RobustEggPriceForecast("eggData.csv")
+    forecast_results = model.run_forecast()
+    
+    # 予測結果の表示
+    print("鶏卵価格予測結果:")
+    print(forecast_results['forecast_mean'])
 
-# 欠損値の処理
-data = data.dropna()
-
-# SARIMAモデルの適用
-sarima_model = SARIMAX(data['egg_price'], order=(1,1,1), seasonal_order=(1,1,1,12))
-sarima_fit = sarima_model.fit()
-
-# 予測期間の設定
-today = datetime.now()
-start_date = today.replace(day=1)  # 今月の1日
-end_date = (today.replace(year=today.year + 2, month=4, day=1) - timedelta(days=1)).replace(day=31)  # 2年後の年度末（3月31日）
-
-# 予測期間のインデックスを作成
-forecast_index = pd.date_range(start=start_date, end=end_date, freq='MS')
-
-# 予測の実行
-steps = len(forecast_index)
-sarima_forecast = sarima_fit.get_forecast(steps=steps)
-sarima_mean = sarima_forecast.predicted_mean
-sarima_ci = sarima_forecast.conf_int()
-
-print(f"{start_date.strftime('%Y年%m月')}から{end_date.strftime('%Y年%m月')}までの鶏卵価格予測 (SARIMA):")
-print(sarima_mean)
-
-# モデルの評価指標
-mse = mean_squared_error(data['egg_price'][-12:], sarima_fit.fittedvalues[-12:])
-rmse = np.sqrt(mse)
-mae = mean_absolute_error(data['egg_price'][-12:], sarima_fit.fittedvalues[-12:])
-r2 = r2_score(data['egg_price'][-12:], sarima_fit.fittedvalues[-12:])
-
-print(f"\nモデル評価指標:")
-print(f"平均二乗誤差 (MSE): {mse:.2f}")
-print(f"平方根平均二乗誤差 (RMSE): {rmse:.2f}")
-print(f"平均絶対誤差 (MAE): {mae:.2f}")
-print(f"決定係数 (R-squared): {r2:.2f}")
-
-# 結果をDataFrameにまとめる
-results = pd.DataFrame({
-    'Date': forecast_index.strftime('%Y-%m'),
-    'SARIMA_Forecast': sarima_mean.values,
-    'Lower_CI': sarima_ci['lower egg_price'],
-    'Upper_CI': sarima_ci['upper egg_price']
-})
-
-# 評価指標と説明を含む辞書
-metrics_explanation = {
-    'Metric': ['MSE', 'RMSE', 'MAE', 'R-squared', 'Confidence Interval'],
-    'Value': [f'{mse:.2f}', f'{rmse:.2f}', f'{mae:.2f}', f'{r2:.2f}', '95%'],
-    'Explanation': [
-        '平均二乗誤差：予測誤差の二乗の平均。値が小さいほど良い。',
-        '平方根平均二乗誤差：MSEの平方根。元のデータと同じ単位で誤差を表す。',
-        '平均絶対誤差：予測誤差の絶対値の平均。',
-        '決定係数：モデルの当てはまりの良さを0から1の間で表す。1に近いほど良い。',
-        '予測値が95%の確率でこの区間内に収まると予想される範囲。'
-    ]
-}
-
-# 評価指標のDataFrame
-metrics_df = pd.DataFrame(metrics_explanation)
-
-# Excelファイルを作成
-wb = openpyxl.Workbook()
-ws = wb.active
-ws.title = "予測結果"
-
-# タイトルを追加
-ws['A1'] = f"{start_date.strftime('%Y年%m月')}から{end_date.strftime('%Y年%m月')}までの鶏卵価格予測結果 (SARIMA)"
-ws['A1'].font = openpyxl.styles.Font(bold=True, size=14)
-
-# 予測結果を追加
-ws.append(['Date', 'SARIMA_Forecast', 'Lower_CI', 'Upper_CI'])
-for r in results.itertuples(index=False, name=None):
-    ws.append(r)
-
-# 評価指標を追加
-ws.append([])
-ws.append(["モデル評価指標と説明"])
-for r in metrics_df.itertuples(index=False, name=None):
-    ws.append(r)
-
-# グラフを作成
-chart = LineChart()
-chart.title = "鶏卵価格予測 (SARIMA)"
-chart.x_axis.title = "日付"
-chart.y_axis.title = "価格"
-
-data = Reference(ws, min_col=2, min_row=1, max_col=4, max_row=len(results)+1)
-cats = Reference(ws, min_col=1, min_row=2, max_row=len(results)+1)
-
-chart.add_data(data, titles_from_data=True)
-chart.set_categories(cats)
-
-# x軸のラベルを調整
-chart.x_axis.tickLblSkip = 3  # 3つおきにラベルを表示
-chart.x_axis.tickLblPos = "low"
-chart.x_axis.textRotation = 45  # ラベルを45度回転
-
-# グラフをシートに追加
-ws.add_chart(chart, "G2")
-
-# Excelファイルを保存
-wb.save("result_sarima.xlsx")
-
-print("\n結果がresult_sarima.xlsxファイルに出力されました。")
+if __name__ == "__main__":
+    main()
