@@ -185,9 +185,10 @@ class RobustEggPriceForecast:
         ws_forecast.append(headers)
         
         # 予測結果の書き込み
-        for date, forecast_value in forecast_results['forecast_mean'].items():
-            lower_ci = forecast_results['forecast_conf_int'].loc[date, 'lower egg_price']
-            upper_ci = forecast_results['forecast_conf_int'].loc[date, 'upper egg_price']
+        for date in forecast_dates:
+            # インデックスが一致するように調整
+            lower_ci = forecast_conf_int.loc[date, 'lower egg_price']
+            upper_ci = forecast_conf_int.loc[date, 'upper egg_price']
             
             ws_forecast.append([
                 date.strftime('%Y/%m'), 
