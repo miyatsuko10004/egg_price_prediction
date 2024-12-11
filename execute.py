@@ -141,10 +141,11 @@ class RobustEggPriceForecast:
         :return: 予測結果
         """
         # 予測期間の設定
-        today = datetime.now()
-        start_date = today.replace(day=1)
-        end_date = (today.replace(year=today.year + 2, month=4, day=1) - timedelta(days=1)).replace(day=31)
-        forecast_index = pd.date_range(start=start_date, end=end_date, freq='MS')
+        forecast_index = pd.date_range(
+            start=self.processed_data.index[-1] + pd.offsets.MonthBegin(1), 
+            periods=forecast_steps, 
+            freq='MS'
+        )
         
         # 予測のための外生変数の準備
         last_data_point = self.processed_data.iloc[-1]
@@ -189,7 +190,7 @@ class RobustEggPriceForecast:
             upper_ci = forecast_results['forecast_conf_int'].loc[date, 'upper egg_price']
             
             ws_forecast.append([
-                date.strftime('%Y-%m'), 
+                date.strftime('%Y/%m'), 
                 forecast_value, 
                 lower_ci, 
                 upper_ci
@@ -201,7 +202,7 @@ class RobustEggPriceForecast:
         
         for idx, row in outliers.iterrows():
             ws_outliers.append([
-                idx.strftime('%Y-%m'), 
+                idx.strftime('%Y/%m'), 
                 row['egg_price'], 
                 '合成外れ値検出法'
             ])
